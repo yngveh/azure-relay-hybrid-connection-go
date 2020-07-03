@@ -28,29 +28,24 @@ type Client struct {
 
 func NewClient(c *Config) (*Client, error) {
 
+	client := &Client{
+		config: c,
+		url:    fmt.Sprintf("https://%s/%s", c.Namespace, c.ConnectionName),
+	}
+
 	provider, err := sas.NewTokenProvider(sas.TokenProviderWithKey(c.KeyName, c.Key))
 	if err != nil {
 		return nil, err
 	}
 
-	url := fmt.Sprintf("https://%s/%s", c.Namespace, c.ConnectionName)
+	client.token, err = provider.GetToken(client.url)
 
-	token, err := provider.GetToken(url)
-	if err != nil {
-		return nil, err
-	}
-
-	return &Client{
-		token:  token,
-		url:    url,
-		config: c,
-	}, nil
+	return client, err
 }
 
 func (c *Client) NewRequest(method, url string, body io.Reader) (req *http.Request, err error) {
 
-	wsUrl := c.url + url
-	req, err = http.NewRequest(method, wsUrl, body)
+	req, err = http.NewRequest(method, c.url + url, body)
 	if err != nil {
 		return
 	}

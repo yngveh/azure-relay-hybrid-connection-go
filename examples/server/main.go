@@ -1,18 +1,15 @@
 package main
 
 import (
-	"context"
 	"log"
 	"os"
-	"os/signal"
 
 	arhc "github.com/yngveh/azure-relay-hybrid-connection-go"
 )
 
 func main() {
-	log.Print("START")
-	defer log.Print("END")
 
+	// Read config from environment variables
 	c := &arhc.Config{
 		Namespace:      os.Getenv("HC_NAMESPACE"),
 		ConnectionName: os.Getenv("HC_CONNECTION_NAME"),
@@ -20,25 +17,23 @@ func main() {
 		Key:            os.Getenv("HC_KEY"),
 	}
 
+	// Create a azure relay hybrid connection client
 	client, err := arhc.NewClient(c)
 	if err != nil {
 		panic(err)
 	}
 
+	// Create a handler function
 	h := func(resp *arhc.Response, req *arhc.Request) error {
-		log.Print("REQ", *req)
+
+		log.Print("request", req.Target)
 		resp.SetResponseBody([]byte("HELLO"))
 		return nil
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	if err := client.Listen(ctx, h); err != nil {
+	// Start blocking listener
+	if err := client.Listen(h); err != nil {
 		panic(err)
 	}
 
-	e := make(chan os.Signal, 1)
-	signal.Notify(e, os.Interrupt)
-	<-e
 }

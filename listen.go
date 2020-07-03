@@ -1,16 +1,18 @@
 package arhc
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/url"
+	"os"
+	"os/signal"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
 
-func (c *Client) Listen(ctx context.Context, handler func(*Response, *Request) error) error {
+func (c *Client) Listen(handler func(*Response, *Request) error) error {
 
 	params := url.Values{}
 	params.Add("sb-hc-action", "listen")
@@ -29,69 +31,82 @@ func (c *Client) Listen(ctx context.Context, handler func(*Response, *Request) e
 	if err != nil {
 		return err
 	}
+	defer conn.Close()
 
-	go readLoop(conn, handler)
-	go shutdown(ctx, conn)
+	done := make(chan struct{})
+	go readLoop(conn, handler, done)
 
-	return nil
-}
-
-func shutdown(ctx context.Context, conn *websocket.Conn) {
-	debug("Waiting for done")
-
-	<-ctx.Done()
-
-	debug("Closing ctx")
-
-	err := conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
-	if err != nil {
-		log.Println("write close:", err)
-		return
-	}
-
-	debug("Closing connection")
-	_ = conn.Close()
-}
-
-func readLoop(conn *websocket.Conn, handler func(*Response, *Request) error) {
-
-	defer func() {
-		_ = conn.Close()
-	}()
+	interrupt := make(chan os.Signal, 1)
+	signal.Notify(interrupt, os.Interrupt)
 
 	for {
+		select {
+		case <-done:
+			return nil
+		case <-interrupt:
+
+			debug("Interrupted send close message")
+
+			err := conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
+			if err != nil {
+				log.Print("write close:", err)
+				return err
+			}
+
+			select {
+			case <-done:
+			case <-time.After(time.Second):
+			}
+
+			return nil
+		}
+	}
+}
+
+func readLoop(conn *websocket.Conn, handler func(*Response, *Request) error, done chan struct{}) {
+
+	defer close(done)
+
+	for {
+
+		debug("Waiting for message")
+
 		t, message, err := conn.ReadMessage()
 		if err != nil {
-			log.Println("read:", err)
-			return
+			debug("read:", err)
+			break
 		}
 
 		debug("MessageType: %d, Message: %s", t, string(message))
 
-		request := &RequestObj{}
-		if err := json.Unmarshal(message, request); err != nil {
-			log.Println("error unmarshal:", err)
-			return
+		requestObj := &RequestObj{}
+		if err := json.Unmarshal(message, requestObj); err != nil {
+			debug("error unmarshal:", err)
+			continue
 		}
 
-		debug("request: %s", request.Request.Target)
+		request := requestObj.Request
 
-		if request.Request.Body {
-			_, body, err := conn.ReadMessage()
+		debug("Request target: %s", request.Target)
+
+		if request.Body {
+			debug("Reading body frame")
+			t, body, err := conn.ReadMessage()
 			if err != nil {
-				log.Println("read:", err)
-				return
+				debug("read:", err)
+				continue
 			}
-			debug("Body: %s", string(body))
-			request.Request.SetRequestBody(body)
+			debug("Type: %s, Body: %s", t, string(body))
+			request.SetRequestBody(body)
 		}
 
 		response := Response{
-			RequestID:  request.Request.ID,
+			RequestID:  request.ID,
 			StatusCode: "200",
 		}
 
-		err = handler(&response, &request.Request)
+		debug("Invoking handler")
+		err = handler(&response, &request)
 		if err != nil {
 			return
 		}
@@ -100,14 +115,16 @@ func readLoop(conn *websocket.Conn, handler func(*Response, *Request) error) {
 			Response: response,
 		}
 
+		debug("Writing header frame")
 		if err := conn.WriteJSON(responseObj); err != nil {
-			log.Println("error unmarshal:", err)
-			return
+			debug("error unmarshal:", err)
+			continue
 		}
 
 		if response.Body {
+			debug("Writing body frame")
 			if err := conn.WriteMessage(websocket.BinaryMessage, response.responseBody); err != nil {
-				log.Println("error writing body:", err)
+				debug("error writing body:", err)
 			}
 		}
 	}
