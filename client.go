@@ -45,7 +45,7 @@ func NewClient(c *Config) (*Client, error) {
 
 func (c *Client) NewRequest(method, url string, body io.Reader) (req *http.Request, err error) {
 
-	req, err = http.NewRequest(method, c.url + url, body)
+	req, err = http.NewRequest(method, c.url+url, body)
 	if err != nil {
 		return
 	}
